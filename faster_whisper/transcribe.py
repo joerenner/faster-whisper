@@ -249,7 +249,7 @@ class WhisperModel:
             append_punctuations=append_punctuations,
         )
 
-        segments = self.generate_segments(features, whisper_encoder, tokenizer, options)
+        segments_small, segments_large = self.generate_segments(features, whisper_encoder, tokenizer, options)
 
         audio_info = AudioInfo(
             language=language,
@@ -257,7 +257,7 @@ class WhisperModel:
             duration=duration,
         )
 
-        return segments, audio_info
+        return segments_small, segments_large, audio_info
 
     def generate_segments(
         self,
@@ -276,6 +276,8 @@ class WhisperModel:
             initial_prompt_tokens = tokenizer.encode(initial_prompt)
             all_tokens.extend(initial_prompt_tokens)
 
+        small_segments = []
+        large_segments = []
         while seek < content_frames:
             time_offset = seek * self.feature_extractor.time_per_frame
             segment = features[:, seek : seek + self.feature_extractor.nb_max_frames]
@@ -294,7 +296,7 @@ class WhisperModel:
 
             encoder_output = whisper_encoder(seek, segment)
 
-            result, avg_log_prob, temperature = self.generate_with_fallback(
+            result, avg_log_prob, temperature, needs_fallback = self.generate_with_fallback(
                 encoder_output, prompt, tokenizer, options
             )
 
@@ -419,7 +421,33 @@ class WhisperModel:
                     if seek_shift > 0:
                         seek = previous_seek + seek_shift
 
-            for segment in current_segments:
+            for i in range(len(current_segments)): 
+                tokens = current_segments[i]["tokens"]
+                text = tokenizer.decode(tokens)
+
+                if current_segments[i]["start"] == current_segments[i]["end"] or not text.strip():
+                    continue
+
+                all_tokens.extend(tokens)
+                small_segments.append(Segment(
+                    start=current_segments[i]["start"],
+                    end=current_segments[i]["end"],
+                    text=text,
+                    words=(
+                        [Word(**word) for word in current_segments[i]["words"]]
+                        if options.word_timestamps
+                        else None
+                    ),
+                ))
+                current_large_segment = Segment(
+                    start=current_segments[i]["start"],
+                    end=current_segments[i]["end"],
+                    text=text, 
+                    words=None,
+                )
+                break
+            
+            for segment in current_segments[i+1:]:
                 tokens = segment["tokens"]
                 text = tokenizer.decode(tokens)
 
@@ -428,7 +456,7 @@ class WhisperModel:
 
                 all_tokens.extend(tokens)
 
-                yield Segment(
+                small_segments.append(Segment(
                     start=segment["start"],
                     end=segment["end"],
                     text=text,
@@ -437,7 +465,16 @@ class WhisperModel:
                         if options.word_timestamps
                         else None
                     ),
+                ))
+                current_large_segment = Segment(
+                    start=current_large_segment.start,
+                    end=segment["end"],
+                    text=current_large_segment.text + " " + text, 
+                    words=None,
                 )
+            large_segments.append(current_large_segment)
+        return small_segments, large_segments
+            
 
     def generate_with_fallback(
         self,
@@ -509,7 +546,7 @@ class WhisperModel:
             if not needs_fallback:
                 break
 
-        return result, avg_log_prob, final_temperature
+        return result, avg_log_prob, final_temperature, needs_fallback
 
     def get_prompt(
         self,
