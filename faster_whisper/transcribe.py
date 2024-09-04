@@ -421,6 +421,7 @@ class WhisperModel:
                     if seek_shift > 0:
                         seek = previous_seek + seek_shift
 
+            current_large_segment = None
             for i in range(len(current_segments)): 
                 tokens = current_segments[i]["tokens"]
                 text = tokenizer.decode(tokens)
@@ -472,7 +473,8 @@ class WhisperModel:
                     text=current_large_segment.text + " " + text, 
                     words=None,
                 )
-            large_segments.append(current_large_segment)
+            if current_large_segment is not None:
+                large_segments.append(current_large_segment)
         return small_segments, large_segments
             
 
